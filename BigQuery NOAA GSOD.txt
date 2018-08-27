@@ -1,0 +1,96 @@
+---1. What was the temperature, date, and station with the highest recorded temperature in NY since 2010?
+---ANSWER
+---OPTION 1 -
+with temprnk as
+(select max(a.max) as maxtemp, a.stn, b.name, a.year, a.mo, a.da, row_number() over(order by max(a.max) desc) as rnk 
+from `bigquery-public-data.noaa_gsod.gsod*` a
+join `bigquery-public-data.noaa_gsod.stations`  b
+on a.stn = b.usaf
+where b.country = 'US'
+and b.state = 'NY'
+and a.stn != '999999'
+and a.wban != '99999'
+and a.max != 9999.9
+and _TABLE_SUFFIX >= '2010'
+group by b.country, b.state, a.stn, b.name, a.year,a.mo,a.da
+order by a.stn, a.year, a.mo, a.da)
+
+select t.name, t.stn ,t.maxtemp, cast(concat(t.year,"-",t.mo,"-", t.da) as date) as record_dt, t.rnk
+from temprnk t
+where t.rnk = 1
+
+---OPTION 2 -
+select first_value(max(a.max)) over(partition by concat(a.year,a.mo,a.da) order by max(a.max) desc)as maxtemp, a.stn, b.name, concat(a.year,"/", a.mo,"/", a.da) as dt, row_number() over(order by max(a.max) desc) as rnk 
+from `bigquery-public-data.noaa_gsod.gsod*` a
+join `bigquery-public-data.noaa_gsod.stations`  b
+on a.stn = b.usaf
+and a.wban = b.wban
+where b.country = 'US'
+and b.state = 'NY'
+and a.stn != '999999'
+and a.wban != '99999'
+and a.max != 9999.9
+and _TABLE_SUFFIX >= '2010'
+group by a.year,a.mo,a.da,a.stn, b.name
+LIMIT 1
+
+
+---2.On what day in 2016 did cumulative precipitation for Central Park (stn = 725053, wban = 94728) cross 30 total inches for the year?
+---ANSWER
+with prcpcnt as
+(select a.stn, a.wban, a.year, a.mo, a.da, sum(a.prcp) over(order by a.year,a.mo,a.da asc rows between unbounded preceding and current row) as cum_prcp
+from `bigquery-public-data.noaa_gsod.gsod2016` a
+where a.stn = '725053'
+and a.wban = '94728'
+order by a.year, a.mo, a.da)
+
+select cast(concat(p.year,"-",p.mo,"-", p.da) as date) as cum_chng_dt, min(p.cum_prcp) as precp
+from prcpcnt p
+where p.cum_prcp >= 30
+group by p.year, p.mo, p.da
+order by p.year, p.mo, p.da 
+LIMIT 1
+
+---3.(BONUS, OPTIONAL) What percent of NY stations active in 2016 (start before 1/1/2016 and end after 12/31/2016) had 3 consecutive days of snowfall in 2016?
+---ANSWER
+---Find ALL active stations in NY in the year 2016
+with actvstn as
+(select s.usaf, s.wban as wbn, s.name from
+`bigquery-public-data.noaa_gsod.stations` s
+where s.usaf != '999999'
+and s.wban != '999999'
+and s.country = 'US'
+and s.state = 'NY'
+and s.begin < '20160101'
+and s.end > '20161231'),
+
+---Find those active stations in NY in 2016 that recorded snowfall
+snwfal as
+(select cast(concat(a.year,"-",a.mo,"-", a.da) as date) as record_dt, a.stn, a.wban, a.prcp, a.snow_ice_pellets as sip
+from 
+`bigquery-public-data.noaa_gsod.gsod2016` a,
+actvstn ac
+where a.stn = ac.usaf
+and a.wban = ac.wbn
+and a.prcp > 0
+and a.prcp != 99.99
+and a.snow_ice_pellets = '1'
+order by a.stn, record_dt),
+
+---Find all stations that recorded snowfall on 3 consecutive days
+threedays as
+(select s1.record_dt as rec1, s2.record_dt as rec2, s3.record_dt as rec3,s1.stn, s1.sip as sip1, s2.sip as sip2, s3.sip as sip3
+from snwfal s1
+join snwfal s2
+on s1.stn = s2.stn
+and s1.wban = s2.wban
+and date_sub(s1.record_dt, interval 1 day) = s2.record_dt
+join snwfal s3
+on s1.stn = s3.stn
+and s1.wban = s3.wban
+and date_sub(s1.record_dt, interval 2 day) = s3.record_dt)
+
+-- Calculate the percentage of active stations in NY that recorded snowfall for 3 consecutive days in the year 2016
+select count(distinct td.stn) as Stations_with_3_consecutive_snowfalls, count(distinct act.usaf) as All_NY_active_stations, round((count(distinct td.stn)/count(distinct act.usaf))*100,2) as Percentage_of_stations_with_3_snowfalls
+from threedays td,
+actvstn act
